@@ -313,8 +313,8 @@ module.exports = class Task{
             };
 
             // All paths are relative to the project directory (./data/<uuid>/)
-            let allPaths = ['odm_orthophoto/odm_orthophoto.tif', 'odm_orthophoto/odm_orthophoto.mbtiles',
-                              'odm_georeferencing', 'odm_texturing',
+            let allPaths = ['odm_orthophoto/odm_orthophoto.tif', 'odm_orthophoto/odm_orthophoto.png', 'odm_orthophoto/odm_orthophoto.mbtiles',
+                              'odm_georeferencing', 'odm_texturing', 'micasense',
                               'odm_dem/dsm.tif', 'odm_dem/dtm.tif', 'dsm_tiles', 'dtm_tiles',
                               'orthophoto_tiles', 'potree_pointcloud', 'images.json'];
             

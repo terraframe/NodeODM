@@ -1,4 +1,4 @@
-FROM opendronemap/odm:latest
+FROM uasdm-odm
 MAINTAINER Piero Toffanin <pt@masseranolabs.com>
 
 EXPOSE 3000
