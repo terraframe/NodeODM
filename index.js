@@ -37,7 +37,7 @@ const TaskManager = require('./libs/TaskManager');
 const Task = require('./libs/Task');
 const odmInfo = require('./libs/odmInfo');
 const Directories = require('./libs/Directories');
-const unzip = require('node-unzip-2');
+const StreamZip = require('node-stream-zip');
 const si = require('systeminformation');
 const mv = require('mv');
 const S3 = require('./libs/S3');
@@ -245,22 +245,33 @@ app.post('/task/new', authCheck, (req, res, next) => {
                     else {
                         async.eachSeries(entries, (entry, cb) => {
                             if (/\.zip$/gi.test(entry)) {
-                                let filesCount = 0;
-                                fs.createReadStream(path.join(destImagesPath, entry)).pipe(unzip.Parse())
-                                        .on('entry', function(entry) {
-                                            if (entry.type === 'File') {
-                                                filesCount++;
-                                                entry.pipe(fs.createWriteStream(path.join(destImagesPath, path.basename(entry.path))));
-                                            } else {
-                                                entry.autodrain();
-                                            }
-                                        })
-                                        .on('close', () => {
-                                            // Verify max images limit
-                                            if (config.maxImages && filesCount > config.maxImages) cb(`${filesCount} images uploaded, but this node can only process up to ${config.maxImages}.`);
-                                            else cb();
-                                        })
-                                        .on('error', cb);
+                            	
+                                const zip = new StreamZip({
+                                    file: path.join(destImagesPath, entry),
+                                    storeEntries: true
+                                });
+                                
+                                zip.on('error', cb);
+                                
+                                zip.on('ready', () => {
+                                    zip.extract(null, destImagesPath, (err, count) => {
+                                      if (err) {
+                                        logger.error(err.stack);
+                                        cb('Extract error')
+                                      }
+                                      else
+                                      {
+                                        logger.info(`Extracted ${count} entries`);
+                                      }
+                                       
+                                      zip.close();
+                                        
+                                       // Verify max images limit
+                                      if (config.maxImages && count > config.maxImages) cb(`${count} images uploaded, but this node can only process up to ${config.maxImages}.`);
+                                      else cb();
+                                    });
+                                });
+                                
                             } else cb();
                         }, cb);
                     }
@@ -502,7 +513,7 @@ app.get('/task/:uuid/download/:asset', authCheck, getTaskFromUuid, (req, res) =>
  *         description: Error message if an error occured
  */
 let uuidCheck = (req, res, next) => {
-    if (!req.body.uuid) res.json({ error: "uuid param missing." });
+    if (!req.body.uuid) res.json({ error: "uuid param missing and body is [" + JSON.stringify(req.body) + "]." });
     else next();
 };
 
