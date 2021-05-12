@@ -2,9 +2,9 @@
 
 [![Build Status](https://travis-ci.org/OpenDroneMap/NodeODM.svg?branch=master)](https://travis-ci.org/OpenDroneMap/NodeODM)
 
-NodeODM is a Node.js App and REST API to access [ODM](https://github.com/OpenDroneMap/ODM). It exposes an API which is used by [WebODM](https://github.com/OpenDroneMap/WebODM).
+NodeODM is a [standard API specification](https://github.com/OpenDroneMap/NodeODM/blob/master/docs/index.adoc) for processing aerial images with engines such as [ODM](https://github.com/OpenDroneMap/ODM). The API is used by clients such as [WebODM](https://github.com/OpenDroneMap/WebODM), [CloudODM](https://github.com/OpenDroneMap/CloudODM) and [PyODM](https://github.com/OpenDroneMap/PyODM). This repository contains a performant, production-ready reference implementation written in NodeJS.
 
-![Alt text](https://user-images.githubusercontent.com/1951843/42737899-ab31bddc-8848-11e8-97e7-4f7e938c7a76.png "NodeODM")
+![image](https://user-images.githubusercontent.com/1951843/78455986-4805ab80-766f-11ea-8a79-1691e062600c.png)
 
 ## Getting Started
 
@@ -12,7 +12,7 @@ We recommend that you setup NodeODM using [Docker](https://www.docker.com/).
 
 * From the Docker Quickstart Terminal (Windows / OSX) or from the command line (Linux) type:
 ```
-docker run -p 3000:3000 opendronemap/node-opendronemap
+docker run -p 3000:3000 opendronemap/nodeodm
 ```
 
 * If you're on Windows/OSX, find the IP of your Docker machine by running this command from your Docker Quickstart Terminal:
@@ -24,7 +24,7 @@ docker-machine ip
 Linux users can connect to 127.0.0.1.
 
 * Open a Web Browser to `http://<yourDockerMachineIp>:3000`
-* Load [some images](https://github.com/OpenDroneMap/ODM/tree/master/tests/test_data/images)
+* Load [some images](https://github.com/OpenDroneMap/ODMdata)
 * Press "Start Task"
 * Go for a walk :)
 
@@ -33,6 +33,8 @@ If the computer running NodeODM is using an old or 32bit CPU, you need to compil
 ## API Docs
 
 See the [API documentation page](https://github.com/OpenDroneMap/NodeODM/blob/master/docs/index.adoc).
+
+Some minor breaking changes exist from version `1.x` to `2.x` of the API. See [migration notes](https://github.com/OpenDroneMap/NodeODM/blob/master/MIGRATION.md).
 
 ## Run Tasks from the Command Line
 
@@ -43,7 +45,7 @@ You can use [CloudODM](https://github.com/OpenDroneMap/CloudODM) to run tasks wi
 If you want to store results on a separate drive, map the `/var/www/data` folder to the location of your drive:
 
 ```bash
-docker run -p 3000:3000 -v /mnt/external_hd:/var/www/data opendronemap/node-opendronemap
+docker run -p 3000:3000 -v /mnt/external_hd:/var/www/data opendronemap/nodeodm
 ```
 
 This can be also used to access the computation results directly from the file system.
@@ -52,31 +54,13 @@ This can be also used to access the computation results directly from the file s
 
 If you are already running [ODM](https://github.com/OpenDroneMap/ODM) on Ubuntu natively you can follow these steps:
 
-1) Install PotreeConverter and LASzip dependency
+1) Install Entwine: https://entwine.io/quickstart.html#installation
  
-```bash
-apt-get install -y libboost-dev libboost-program-options-dev
-
-mkdir /staging
-git clone https://github.com/pierotofy/LAStools /staging/LAStools
-cd LAStools/LASzip
-mkdir build
-cd build
-cmake -DCMAKE_BUILD_TYPE=Release ..
-make
-
-git clone https://github.com/pierotofy/PotreeConverter /staging/PotreeConverter
-cd /staging/PotreeConverter
-mkdir build
-cd build
-cmake -DCMAKE_BUILD_TYPE=Release -DLASZIP_INCLUDE_DIRS=/staging/LAStools/LASzip/dll -DLASZIP_LIBRARY=/staging/LAStools/LASzip/build/src/liblaszip.a ..
-make && sudo make install
-```
-2) Install gdal2tiles.py script, node.js and npm dependencies
+2) Install node.js, npm dependencies, 7zip and unzip:
 
 ```bash
 sudo curl --silent --location https://deb.nodesource.com/setup_6.x | sudo bash -
-sudo apt-get install -y nodejs python-gdal
+sudo apt-get install -y nodejs python-gdal p7zip-full unzip
 git clone https://github.com/OpenDroneMap/NodeODM
 cd NodeODM
 npm install
@@ -160,9 +144,4 @@ Make a pull request for small contributions. For big contributions, please open 
 
 ## Roadmap
 
-- [X] Command line options for OpenDroneMap
-- [X] GPC List support
-- [ ] Video support when the [SLAM module](https://github.com/OpenDroneMap/OpenDroneMap/pull/317) becomes available
-- [ ] Continuous Integration Setup
-- [X] Documentation
-- [ ] Unit Testing
+See the [list of wanted features](https://github.com/OpenDroneMap/NodeODM/issues?q=is%3Aopen+is%3Aissue+label%3A%22new+feature%22).

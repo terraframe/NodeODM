@@ -22,90 +22,44 @@ const config = require('./config.js');
 const packageJson = JSON.parse(fs.readFileSync('./package.json'));
 
 const logger = require('./libs/logger');
-const path = require('path');
 const async = require('async');
 const mime = require('mime');
-const rmdir = require('rimraf');
 
+const cors = require('cors')
 const express = require('express');
 const app = express();
 
-const multer = require('multer');
 const bodyParser = require('body-parser');
+const multer = require('multer');
 
 const TaskManager = require('./libs/TaskManager');
-const Task = require('./libs/Task');
 const odmInfo = require('./libs/odmInfo');
-const Directories = require('./libs/Directories');
-const StreamZip = require('node-stream-zip');
 const si = require('systeminformation');
-const mv = require('mv');
 const S3 = require('./libs/S3');
 
 const auth = require('./libs/auth/factory').fromConfig(config);
 const authCheck = auth.getMiddleware();
-const uuidv4 = require('uuid/v4');
+const taskNew = require('./libs/taskNew');
 
-// zip files
-let request = require('request');
-
-let download = function(uri, filename, callback) {
-    request.head(uri, function(err, res, body) {
-        if (err) callback(err);
-        else{
-            request(uri).pipe(fs.createWriteStream(filename)).on('close', callback);
-        }
-    });
-};
+app.use(cors())
+app.options('*', cors())
 
 app.use(express.static('public'));
 app.use('/swagger.json', express.static('docs/swagger.json'));
 
-const upload = multer({
-    storage: multer.diskStorage({
-        destination: (req, file, cb) => {
-            let dstPath = path.join("tmp", req.id);
-            fs.exists(dstPath, exists => {
-                if (!exists) {
-                    fs.mkdir(dstPath, undefined, () => {
-                        cb(null, dstPath);
-                    });
-                } else {
-                    cb(null, dstPath);
-                }
-            });
-        },
-        filename: (req, file, cb) => {
-            cb(null, file.originalname);
-        }
-    })
-});
-
+const formDataParser = multer().none();
 const urlEncodedBodyParser = bodyParser.urlencoded({extended: false});
+const jsonBodyParser = bodyParser.json();
 
 let taskManager;
 let server;
 
 /** @swagger
- *  /task/new:
+ *  /task/new/init:
  *    post:
- *      description: Creates a new task and places it at the end of the processing queue
+ *      description: Initialize the upload of a new task. If successful, a user can start uploading files via /task/new/upload. The task will not start until /task/new/commit is called.
  *      tags: [task]
- *      consumes:
- *        - multipart/form-data
  *      parameters:
- *        -
- *          name: images
- *          in: formData
- *          description: Images to process, plus an optional GCP file. If included, the GCP file should have .txt extension
- *          required: false
- *          type: file
- *        -
- *          name: zipurl
- *          in: formData
- *          description: URL of the zip file containing the images to process, plus an optional GCP file. If included, the GCP file should have .txt extension
- *          required: false
- *          type: string
  *        -
  *          name: name
  *          in: formData
@@ -121,9 +75,27 @@ let server;
  *        -
  *          name: skipPostProcessing
  *          in: formData
- *          description: 'When set, skips generation of map tiles, derivate assets, point cloud tiles.'
+ *          description: 'When set, skips generation of point cloud tiles.'
  *          required: false
  *          type: boolean
+ *        -
+ *          name: webhook
+ *          in: formData
+ *          description: Optional URL to call when processing has ended (either successfully or unsuccessfully).
+ *          required: false
+ *          type: string
+ *        -
+ *          name: outputs
+ *          in: formData
+ *          description: 'An optional serialized JSON string of paths relative to the project directory that should be included in the all.zip result file, overriding the default behavior.'
+ *          required: false
+ *          type: string
+ *        -
+ *          name: dateCreated
+ *          in: formData
+ *          description: 'An optional timestamp overriding the default creation date of the task.'
+ *          required: false
+ *          type: integer
  *        -
  *          name: token
  *          in: query
@@ -151,169 +123,170 @@ let server;
  *          schema:
  *            $ref: '#/definitions/Error'
  */
-app.post('/task/new', authCheck, (req, res, next) => {
-    // A user can optionally suggest a UUID instead of letting
-    // nodeODM pick one.
-    if (req.get('set-uuid')){
-        const userUuid = req.get('set-uuid');
+app.post('/task/new/init', authCheck, taskNew.assignUUID, formDataParser, taskNew.handleInit);
 
-        // Valid UUID and no other task with same UUID?
-        if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(userUuid) && !taskManager.find(userUuid)){
-            req.id = userUuid;
-            next();
-        }else{
-            res.json({error: `Invalid set-uuid: ${userUuid}`})
-        }
-    }else{
-        req.id = uuidv4();
-        next();
-    }
-}, upload.array('images'), (req, res) => {
-    // TODO: consider doing the file moving in the background
-    // and return a response more quickly instead of a long timeout.
-    req.setTimeout(1000 * 60 * 20);
+/** @swagger
+ *  /task/new/upload/{uuid}:
+ *    post:
+ *      description: Adds one or more files to the task created via /task/new/init. It does not start the task. To start the task, call /task/new/commit.
+ *      tags: [task]
+ *      consumes:
+ *        - multipart/form-data
+ *      parameters:
+ *        -
+ *           name: uuid
+ *           in: path
+ *           description: UUID of the task
+ *           required: true
+ *           type: string
+ *        -
+ *          name: images
+ *          in: formData
+ *          description: Images to process, plus optional files such as a GEO file (geo.txt), image groups file (image_groups.txt), GCP file (*.txt) or seed file (seed.zip). If included, the GCP file should have .txt extension. If included, the seed archive pre-polulates the task directory with its contents.
+ *          required: true
+ *          type: file
+ *        -
+ *          name: token
+ *          in: query
+ *          description: 'Token required for authentication (when authentication is required).'
+ *          required: false
+ *          type: string
+ *      responses:
+ *        200:
+ *          description: File Received
+ *          schema:
+ *            $ref: "#/definitions/Response"
+ *        default:
+ *          description: Error
+ *          schema:
+ *            $ref: '#/definitions/Error'
+ */
+app.post('/task/new/upload/:uuid', authCheck, taskNew.getUUID, taskNew.preUpload, taskNew.uploadImages, taskNew.handleUpload);
 
-    let srcPath = path.join("tmp", req.id);
+/** @swagger
+ *  /task/new/commit/{uuid}:
+ *    post:
+ *      description: Creates a new task for which images have been uploaded via /task/new/upload.
+ *      tags: [task]
+ *      parameters:
+ *        -
+ *           name: uuid
+ *           in: path
+ *           description: UUID of the task
+ *           required: true
+ *           type: string
+ *        -
+ *          name: token
+ *          in: query
+ *          description: 'Token required for authentication (when authentication is required).'
+ *          required: false
+ *          type: string
+ *      responses:
+ *        200:
+ *          description: Success
+ *          schema:
+ *            type: object
+ *            required: [uuid]
+ *            properties:
+ *              uuid:
+ *                type: string
+ *                description: UUID of the newly created task
+ *        default:
+ *          description: Error
+ *          schema:
+ *            $ref: '#/definitions/Error'
+ */
+app.post('/task/new/commit/:uuid', authCheck, taskNew.getUUID, taskNew.handleCommit, taskNew.createTask);
 
-    // Print error message and cleanup
-    const die = (error) => {
-        res.json({error});
-
-        // Check if tmp/ directory needs to be cleaned
-        if (fs.stat(srcPath, (err, stats) => {
-            if (!err && stats.isDirectory()) rmdir(srcPath, () => {}); // ignore errors, don't wait
-        }));
-    };
-
-    if ((!req.files || req.files.length === 0) && !req.body.zipurl) die("Need at least 1 file or a zip file url.");
-    else if (config.maxImages && req.files && req.files.length > config.maxImages) die(`${req.files.length} images uploaded, but this node can only process up to ${config.maxImages}.`);
-
-    else {
-        let destPath = path.join(Directories.data, req.id);
-        let destImagesPath = path.join(destPath, "images");
-        let destGpcPath = path.join(destPath, "gpc");
-
-        async.series([
-            cb => {
-                odmInfo.filterOptions(req.body.options, (err, options) => {
-                    if (err) cb(err);
-                    else {
-                        req.body.options = options;
-                        cb(null);
-                    }
-                });
-            },
-
-            // Move all uploads to data/<uuid>/images dir (if any)
-            cb => {
-                if (req.files && req.files.length > 0) {
-                    fs.stat(destPath, (err, stat) => {
-                        if (err && err.code === 'ENOENT') cb();
-                        else cb(new Error(`Directory exists (should not have happened: ${err.code})`));
-                    });
-                } else {
-                    cb();
-                }
-            },
-
-            // Unzips zip URL to tmp/<uuid>/ (if any)
-            cb => {
-                if (req.body.zipurl) {
-                    let archive = "zipurl.zip";
-
-                    upload.storage.getDestination(req, archive, (err, dstPath) => {
-                        if (err) cb(err);
-                        else{
-                            let archiveDestPath = path.join(dstPath, archive);
-
-                            download(req.body.zipurl, archiveDestPath, cb);
-                        }
-                    });
-                } else {
-                    cb();
-                }
-            },
-
-            cb => fs.mkdir(destPath, undefined, cb),
-            cb => fs.mkdir(destGpcPath, undefined, cb),
-            cb => mv(srcPath, destImagesPath, cb),
-
-            cb => {
-                // Find any *.zip file and extract
-                fs.readdir(destImagesPath, (err, entries) => {
-                    if (err) cb(err);
-                    else {
-                        async.eachSeries(entries, (entry, cb) => {
-                            if (/\.zip$/gi.test(entry)) {
-                            	
-                                const zip = new StreamZip({
-                                    file: path.join(destImagesPath, entry),
-                                    storeEntries: true
-                                });
-                                
-                                zip.on('error', cb);
-                                
-                                zip.on('ready', () => {
-                                    zip.extract(null, destImagesPath, (err, count) => {
-                                      if (err) {
-                                        logger.error(err.stack);
-                                        cb('Extract error')
-                                      }
-                                      else
-                                      {
-                                        logger.info(`Extracted ${count} entries`);
-                                      }
-                                       
-                                      zip.close();
-                                        
-                                       // Verify max images limit
-                                      if (config.maxImages && count > config.maxImages) cb(`${count} images uploaded, but this node can only process up to ${config.maxImages}.`);
-                                      else cb();
-                                    });
-                                });
-                                
-                            } else cb();
-                        }, cb);
-                    }
-                });
-            },
-
-            cb => {
-                // Find any *.txt (GPC) file and move it to the data/<uuid>/gpc directory
-                // also remove any lingering zipurl.zip
-                fs.readdir(destImagesPath, (err, entries) => {
-                    if (err) cb(err);
-                    else {
-                        async.eachSeries(entries, (entry, cb) => {
-                            if (/\.txt$/gi.test(entry)) {
-                                mv(path.join(destImagesPath, entry), path.join(destGpcPath, entry), cb);
-                            }else if (/\.zip$/gi.test(entry)){
-                                fs.unlink(path.join(destImagesPath, entry), cb);
-                            } else cb();
-                        }, cb);
-                    }
-                });
-            },
-
-            // Create task
-            cb => {
-                new Task(req.id, req.body.name, (err, task) => {
-                    if (err) cb(err);
-                    else {
-                        taskManager.addNew(task);
-                        res.json({ uuid: req.id });
-                        cb();
-                    }
-                }, req.body.options, 
-                   req.body.webhook,
-                   req.body.skipPostProcessing === 'true');
-            }
-        ], err => {
-            if (err) die(err.message);
-        });
-    }
-
-});
+/** @swagger
+ *  /task/new:
+ *    post:
+ *      description: Creates a new task and places it at the end of the processing queue. For uploading really large tasks, see /task/new/init instead.
+ *      tags: [task]
+ *      consumes:
+ *        - multipart/form-data
+ *      parameters:
+ *        -
+ *          name: images
+ *          in: formData
+ *          description: Images to process, plus optional files such as a GEO file (geo.txt), image groups file (image_groups.txt), GCP file (*.txt) or seed file (seed.zip). If included, the GCP file should have .txt extension. If included, the seed archive pre-polulates the task directory with its contents.
+ *          required: false
+ *          type: file
+ *        -
+ *          name: zipurl
+ *          in: formData
+ *          description: URL of the zip file containing the images to process, plus an optional GEO file and/or an optional GCP file. If included, the GCP file should have .txt extension
+ *          required: false
+ *          type: string
+ *        -
+ *          name: name
+ *          in: formData
+ *          description: An optional name to be associated with the task
+ *          required: false
+ *          type: string
+ *        -
+ *          name: options
+ *          in: formData
+ *          description: 'Serialized JSON string of the options to use for processing, as an array of the format: [{name: option1, value: value1}, {name: option2, value: value2}, ...]. For example, [{"name":"cmvs-maxImages","value":"500"},{"name":"time","value":true}]. For a list of all options, call /options'
+ *          required: false
+ *          type: string
+ *        -
+ *          name: skipPostProcessing
+ *          in: formData
+ *          description: 'When set, skips generation of point cloud tiles.'
+ *          required: false
+ *          type: boolean
+ *        -
+ *          name: webhook
+ *          in: formData
+ *          description: Optional URL to call when processing has ended (either successfully or unsuccessfully).
+ *          required: false
+ *          type: string
+ *        -
+ *          name: outputs
+ *          in: formData
+ *          description: 'An optional serialized JSON string of paths relative to the project directory that should be included in the all.zip result file, overriding the default behavior.'
+ *          required: false
+ *          type: string
+ *        -
+ *          name: dateCreated
+ *          in: formData
+ *          description: 'An optional timestamp overriding the default creation date of the task.'
+ *          required: false
+ *          type: integer
+ *        -
+ *          name: token
+ *          in: query
+ *          description: 'Token required for authentication (when authentication is required).'
+ *          required: false
+ *          type: string
+ *        -
+ *          name: set-uuid
+ *          in: header
+ *          description: 'An optional UUID string that will be used as UUID for this task instead of generating a random one.'
+ *          required: false
+ *          type: string
+ *      responses:
+ *        200:
+ *          description: Success
+ *          schema:
+ *            type: object
+ *            required: [uuid]
+ *            properties:
+ *              uuid:
+ *                type: string
+ *                description: UUID of the newly created task
+ *        default:
+ *          description: Error
+ *          schema:
+ *            $ref: '#/definitions/Error'
+ */
+app.post('/task/new', authCheck, taskNew.assignUUID, taskNew.uploadImages, (req, res, next) => {
+    req.body = req.body || {};
+    if ((!req.files || req.files.length === 0) && !req.body.zipurl) req.error = "Need at least 1 file or a zip file url.";
+    else if (config.maxImages && req.files && req.files.length > config.maxImages) req.error = `${req.files.length} images uploaded, but this node can only process up to ${config.maxImages}.`;
+    next();
+}, taskNew.createTask);
 
 let getTaskFromUuid = (req, res, next) => {
     let task = taskManager.find(req.params.uuid);
@@ -322,6 +295,44 @@ let getTaskFromUuid = (req, res, next) => {
         next();
     } else res.json({ error: `${req.params.uuid} not found` });
 };
+
+/** @swagger
+ *  /task/list:
+ *     get:
+ *       description: Gets the list of tasks available on this node.
+ *       tags: [task]
+ *       parameters:
+ *        -
+ *          name: token
+ *          in: query
+ *          description: 'Token required for authentication (when authentication is required).'
+ *          required: false
+ *          type: string
+ *       responses:
+ *        200:
+ *          description: Task List
+ *          schema:
+ *            title: TaskList
+ *            type: array
+ *            items:
+ *              type: object
+ *              required: [uuid]
+ *              properties:
+ *                uuid:
+ *                  type: string
+ *                  description: UUID
+ *        default:
+ *          description: Error
+ *          schema:
+ *            $ref: '#/definitions/Error'
+ */
+app.get('/task/list', authCheck, (req, res) => {
+    const tasks = [];
+    for (let uuid in taskManager.tasks){
+        tasks.push({uuid});
+    }
+    res.json(tasks);
+});
 
 /** @swagger
  *  /task/{uuid}/info:
@@ -336,24 +347,25 @@ let getTaskFromUuid = (req, res, next) => {
  *           required: true
  *           type: string
  *        -
- *          name: options
- *          in: formData
- *          description: 'Serialized JSON string of the options to use for processing, as an array of the format: [{name: option1, value: value1}, {name: option2, value: value2}, ...]. For example, [{"name":"cmvs-maxImages","value":"500"},{"name":"time","value":true}]. For a list of all options, call /options'
- *          required: false
- *          type: string
- *        -
  *          name: token
  *          in: query
  *          description: 'Token required for authentication (when authentication is required).'
  *          required: false
  *          type: string
+ *        -
+ *          name: with_output
+ *          in: query
+ *          description: Optionally retrieve the console output for this task. The parameter specifies the line number that the console output should be truncated from. For example, passing a value of 100 will retrieve the console output starting from line 100. By default no console output is added to the response.
+ *          default: 0
+ *          required: false
+ *          type: integer
  *       responses:
  *        200:
  *         description: Task Information
  *         schema:
  *           title: TaskInfo
  *           type: object
- *           required: [uuid, name, dateCreated, processingTime, status, options, imagesCount]
+ *           required: [uuid, name, dateCreated, processingTime, status, options, imagesCount, progress]
  *           properties:
  *            uuid:
  *              type: string
@@ -368,9 +380,13 @@ let getTaskFromUuid = (req, res, next) => {
  *              type: integer
  *              description: Milliseconds that have elapsed since the task started being processed.
  *            status:
- *              type: integer
- *              description: Status code (10 = QUEUED, 20 = RUNNING, 30 = FAILED, 40 = COMPLETED, 50 = CANCELED)
- *              enum: [10, 20, 30, 40, 50]
+ *              type: object
+ *              required: [code]
+ *              properties:
+ *                code:
+ *                  type: integer
+ *                  description: Status code (10 = QUEUED, 20 = RUNNING, 30 = FAILED, 40 = COMPLETED, 50 = CANCELED)
+ *                  enum: [10, 20, 30, 40, 50]
  *            options:
  *              type: array
  *              description: List of options used to process this task
@@ -387,13 +403,23 @@ let getTaskFromUuid = (req, res, next) => {
  *            imagesCount:
  *              type: integer
  *              description: Number of images
+ *            progress:
+ *              type: float
+ *              description: Percentage progress (estimated) of the task
+ *            output:
+ *              type: array
+ *              description: Console output for the task (only if requested via ?output=<linenum>)
+ *              items:
+ *                type: string
  *        default:
  *          description: Error
  *          schema:
  *            $ref: '#/definitions/Error'
  */
 app.get('/task/:uuid/info', authCheck, getTaskFromUuid, (req, res) => {
-    res.json(req.task.getInfo());
+    const info = req.task.getInfo();
+    if (req.query.with_output !== undefined) info.output = req.task.getOutput(req.query.with_output);
+    res.json(info);
 });
 
 /** @swagger
@@ -454,7 +480,6 @@ app.get('/task/:uuid/output', authCheck, getTaskFromUuid, (req, res) => {
  *          required: true
  *          enum:
  *            - all.zip
- *            - orthophoto.tif
  *        -
  *          name: token
  *          in: query
@@ -513,7 +538,7 @@ app.get('/task/:uuid/download/:asset', authCheck, getTaskFromUuid, (req, res) =>
  *         description: Error message if an error occured
  */
 let uuidCheck = (req, res, next) => {
-    if (!req.body.uuid) res.json({ error: "uuid param missing and body is [" + JSON.stringify(req.body) + "]." });
+    if (!req.body.uuid) res.json({ error: "uuid param missing." });
     else next();
 };
 
@@ -548,7 +573,7 @@ let successHandler = res => {
  *          schema:
  *            $ref: "#/definitions/Response"
  */
-app.post('/task/cancel', urlEncodedBodyParser, authCheck, uuidCheck, (req, res) => {
+app.post('/task/cancel', urlEncodedBodyParser, jsonBodyParser, authCheck, uuidCheck, (req, res) => {
     taskManager.cancel(req.body.uuid, successHandler(res));
 });
 
@@ -576,7 +601,7 @@ app.post('/task/cancel', urlEncodedBodyParser, authCheck, uuidCheck, (req, res) 
  *          schema:
  *            $ref: "#/definitions/Response"
  */
-app.post('/task/remove', urlEncodedBodyParser, authCheck, uuidCheck, (req, res) => {
+app.post('/task/remove', urlEncodedBodyParser, jsonBodyParser, authCheck, uuidCheck, (req, res) => {
     taskManager.remove(req.body.uuid, successHandler(res));
 });
 
@@ -611,7 +636,7 @@ app.post('/task/remove', urlEncodedBodyParser, authCheck, uuidCheck, (req, res) 
  *          schema:
  *            $ref: "#/definitions/Response"
  */
-app.post('/task/restart', urlEncodedBodyParser, authCheck, uuidCheck, (req, res, next) => {
+app.post('/task/restart', urlEncodedBodyParser, jsonBodyParser, authCheck, uuidCheck, (req, res, next) => {
     if (req.body.options){
         odmInfo.filterOptions(req.body.options, (err, options) => {
             if (err) res.json({ error: err.message });
@@ -692,7 +717,7 @@ app.get('/options', authCheck, (req, res) => {
  *         description: Info
  *         schema:
  *           type: object
- *           required: [version, taskQueueCount]
+ *           required: [version, taskQueueCount, maxImages, engineVersion, engine]
  *           properties:
  *             version:
  *               type: string
@@ -715,17 +740,21 @@ app.get('/options', authCheck, (req, res) => {
  *             maxParallelTasks:
  *               type: integer
  *               description: Maximum number of tasks that can be processed simultaneously
- *             odmVersion:
+ *             engineVersion:
  *               type: string
- *               description: Current version of ODM
+ *               description: Current version of processing engine
+ *             engine:
+ *               type: string
+ *               description: Lowercase identifier of processing engine
  */
 app.get('/info', authCheck, (req, res) => {
     async.parallel({
         cpu: cb => si.cpu(data => cb(null, data)),
         mem: cb => si.mem(data => cb(null, data)),
-        odmVersion: odmInfo.getVersion
+        engineVersion: odmInfo.getVersion,
+        engine: odmInfo.getEngine
     }, (_, data) => {
-        const { cpu, mem, odmVersion } = data;
+        const { cpu, mem, engineVersion, engine } = data;
 
         // For testing
         if (req.query._debugUnauthorized){
@@ -742,7 +771,8 @@ app.get('/info', authCheck, (req, res) => {
             cpuCores: cpu.cores,
             maxImages: config.maxImages,
             maxParallelTasks: config.parallelQueueProcessing,
-            odmVersion: odmVersion
+            engineVersion,
+            engine
         });
     });
 });
@@ -868,13 +898,25 @@ process.on('SIGTERM', gracefulShutdown);
 process.on('SIGINT', gracefulShutdown);
 
 // Startup
-if (config.test) logger.info("Running in test mode");
+if (config.test) {
+    logger.info("Running in test mode");
+    if (config.testSkipOrthophotos) logger.info("Orthophotos will be skipped");
+    if (config.testSkipDems) logger.info("DEMs will be skipped");
+    if (config.testDropUploads) logger.info("Uploads will drop at random");
+}
+
+if (!config.hasUnzip) logger.warn("The unzip program is not installed, (certain unzip operations might be slower)");
+if (!config.has7z) logger.warn("The 7z program is not installed, falling back to legacy (zipping will be slower)");
+
 
 let commands = [
     cb => odmInfo.initialize(cb),
     cb => auth.initialize(cb),
     cb => S3.initialize(cb),
-    cb => { taskManager = new TaskManager(cb); },
+    cb => { 
+        TaskManager.initialize(cb);
+        taskManager = TaskManager.singleton();
+    },
     cb => {
         server = app.listen(config.port, err => {
             if (!err) logger.info('Server has started on port ' + String(config.port));

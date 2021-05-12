@@ -24,6 +24,7 @@ const logger = require('./logger');
 
 let odmOptions = null;
 let odmVersion = null;
+let engine = null;
 
 module.exports = {
     initialize: function(done){
@@ -39,7 +40,22 @@ module.exports = {
             return;
         }
 
-        odmRunner.getVersion(done);
+        odmRunner.getVersion((err, version) => {
+            odmVersion = version;
+            done(null, version);
+        });
+    },
+
+    getEngine: function(done){
+        if (engine){
+            done(null, engine);
+            return;
+        }
+
+        odmRunner.getEngine((err, eng) => {
+            engine = eng;
+            done(null, eng);
+        });
     },
 
     getOptions: function(done){
@@ -57,9 +73,10 @@ module.exports = {
                     // (num cores can be set programmatically, so can gcpFile, etc.)
                     if (["-h", "--project-path", "--cmvs-maxImages", "--time",
                         "--zip-results", "--pmvs-num-cores",
-                        "--start-with", "--gcp", "--end-with", "--images",
+                        "--start-with", "--gcp", "--images", "--geo",
+                        "--split-image-groups",
                         "--rerun-all", "--rerun",
-                        "--slam-config", "--video", "--version", "--name"].indexOf(option) !== -1) continue;
+                        "--slam-config", "--video", "--version", "name"].indexOf(option) !== -1) continue;
 
                     let values = json[option];
 
@@ -75,12 +92,14 @@ module.exports = {
 
                     switch((values.type || "").trim()){
                         case "<type 'int'>":
+                        case "<class 'int'>":
                             type = "int";
                             value = values['default'] !== undefined ? 
                                             parseInt(values['default']) :
                                             0;
                             break;
                         case "<type 'float'>":
+                        case "<class 'float'>":
                             type = "float";
                             value = values['default'] !== undefined ? 
                                             parseFloat(values['default']) :
@@ -122,9 +141,7 @@ module.exports = {
                         // is in the list of choices
                         if (domain.indexOf(value) === -1) domain.unshift(value);
                     }
-
-                    help = help.replace(/\%\(default\)s/g, value);
-
+                    
                     odmOptions.push({
                         name, type, value, domain, help
                     });
@@ -218,6 +235,18 @@ module.exports = {
                                 return value < bound;
                             default:
                                 return false;
+                        }
+                    }
+                },
+                {
+                    regex: /^(json)$/,
+                    validate: function(matches, value){
+                        try{
+                            if (typeof value !== 'string') return false;
+                            JSON.parse(value);
+                            return true;
+                        }catch(e){
+                            return false;
                         }
                     }
                 },

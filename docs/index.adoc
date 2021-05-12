@@ -1,4 +1,4 @@
-= node-opendronemap
+= NodeODM
 
 
 [[_overview]]
@@ -8,7 +8,7 @@ REST API to access ODM
 
 === Version information
 [%hardbreaks]
-_Version_ : 1.3.1
+_Version_ : 2.1.4
 
 
 === Contact information
@@ -18,7 +18,7 @@ _Contact_ : Piero Toffanin
 
 === License information
 [%hardbreaks]
-_License_ : GPL-3.0
+_License_ : AGPL-3.0
 
 
 === URI scheme
@@ -180,12 +180,14 @@ _optional_|Token required for authentication (when authentication is required).|
 _optional_|Amount of RAM available in bytes|integer
 |*cpuCores* +
 _optional_|Number of CPU cores (virtual)|integer
+|*engine* +
+_required_|Lowercase identifier of processing engine|string
+|*engineVersion* +
+_required_|Current version of processing engine|string
 |*maxImages* +
-_optional_|Maximum number of images allowed for new tasks or null if there's no limit.|integer
+_required_|Maximum number of images allowed for new tasks or null if there's no limit.|integer
 |*maxParallelTasks* +
 _optional_|Maximum number of tasks that can be processed simultaneously|integer
-|*odmVersion* +
-_optional_|Current version of ODM|string
 |*taskQueueCount* +
 _required_|Number of tasks currently being processed or waiting to be processed|integer
 |*totalMemory* +
@@ -277,11 +279,53 @@ _required_|UUID of the task|string|
 |===
 
 
+[[_task_list_get]]
+=== GET /task/list
+
+==== Description
+Gets the list of tasks available on this node.
+
+
+==== Parameters
+
+[options="header", cols=".^2,.^3,.^9,.^4,.^2"]
+|===
+|Type|Name|Description|Schema|Default
+|*Query*|*token* +
+_optional_|Token required for authentication (when authentication is required).|string|
+|===
+
+
+==== Responses
+
+[options="header", cols=".^2,.^14,.^4"]
+|===
+|HTTP Code|Description|Schema
+|*200*|Task List|< <<_task_list_get_response_200,Response 200>> > array
+|*default*|Error|<<_error,Error>>
+|===
+
+[[_task_list_get_response_200]]
+*Response 200*
+
+[options="header", cols=".^3,.^11,.^4"]
+|===
+|Name|Description|Schema
+|*uuid* +
+_required_|UUID|string
+|===
+
+
+==== Tags
+
+* task
+
+
 [[_task_new_post]]
 === POST /task/new
 
 ==== Description
-Creates a new task and places it at the end of the processing queue
+Creates a new task and places it at the end of the processing queue. For uploading really large tasks, see /task/new/init instead.
 
 
 ==== Parameters
@@ -293,16 +337,22 @@ Creates a new task and places it at the end of the processing queue
 _optional_|An optional UUID string that will be used as UUID for this task instead of generating a random one.|string|
 |*Query*|*token* +
 _optional_|Token required for authentication (when authentication is required).|string|
+|*FormData*|*dateCreated* +
+_optional_|An optional timestamp overriding the default creation date of the task.|integer|
 |*FormData*|*images* +
-_optional_|Images to process, plus an optional GCP file. If included, the GCP file should have .txt extension|file|
+_optional_|Images to process, plus optional files such as a GEO file (geo.txt), image groups file (image_groups.txt), GCP file (*.txt) or seed file (seed.zip). If included, the GCP file should have .txt extension. If included, the seed archive pre-polulates the task directory with its contents.|file|
 |*FormData*|*name* +
 _optional_|An optional name to be associated with the task|string|
 |*FormData*|*options* +
 _optional_|Serialized JSON string of the options to use for processing, as an array of the format: [{name: option1, value: value1}, {name: option2, value: value2}, …]. For example, [{"name":"cmvs-maxImages","value":"500"},{"name":"time","value":true}]. For a list of all options, call /options|string|
+|*FormData*|*outputs* +
+_optional_|An optional serialized JSON string of paths relative to the project directory that should be included in the all.zip result file, overriding the default behavior.|string|
 |*FormData*|*skipPostProcessing* +
-_optional_|When set, skips generation of map tiles, derivate assets, point cloud tiles.|boolean|
+_optional_|When set, skips generation of point cloud tiles.|boolean|
+|*FormData*|*webhook* +
+_optional_|Optional URL to call when processing has ended (either successfully or unsuccessfully).|string|
 |*FormData*|*zipurl* +
-_optional_|URL of the zip file containing the images to process, plus an optional GCP file. If included, the GCP file should have .txt extension|string|
+_optional_|URL of the zip file containing the images to process, plus an optional GEO file and/or an optional GCP file. If included, the GCP file should have .txt extension|string|
 |===
 
 
@@ -323,6 +373,147 @@ _optional_|URL of the zip file containing the images to process, plus an optiona
 |Name|Description|Schema
 |*uuid* +
 _required_|UUID of the newly created task|string
+|===
+
+
+==== Consumes
+
+* `multipart/form-data`
+
+
+==== Tags
+
+* task
+
+
+[[_task_new_commit_uuid_post]]
+=== POST /task/new/commit/{uuid}
+
+==== Description
+Creates a new task for which images have been uploaded via /task/new/upload.
+
+
+==== Parameters
+
+[options="header", cols=".^2,.^3,.^9,.^4,.^2"]
+|===
+|Type|Name|Description|Schema|Default
+|*Path*|*uuid* +
+_required_|UUID of the task|string|
+|*Query*|*token* +
+_optional_|Token required for authentication (when authentication is required).|string|
+|===
+
+
+==== Responses
+
+[options="header", cols=".^2,.^14,.^4"]
+|===
+|HTTP Code|Description|Schema
+|*200*|Success|<<_task_new_commit_uuid_post_response_200,Response 200>>
+|*default*|Error|<<_error,Error>>
+|===
+
+[[_task_new_commit_uuid_post_response_200]]
+*Response 200*
+
+[options="header", cols=".^3,.^11,.^4"]
+|===
+|Name|Description|Schema
+|*uuid* +
+_required_|UUID of the newly created task|string
+|===
+
+
+==== Tags
+
+* task
+
+
+[[_task_new_init_post]]
+=== POST /task/new/init
+
+==== Description
+Initialize the upload of a new task. If successful, a user can start uploading files via /task/new/upload. The task will not start until /task/new/commit is called.
+
+
+==== Parameters
+
+[options="header", cols=".^2,.^3,.^9,.^4,.^2"]
+|===
+|Type|Name|Description|Schema|Default
+|*Header*|*set-uuid* +
+_optional_|An optional UUID string that will be used as UUID for this task instead of generating a random one.|string|
+|*Query*|*token* +
+_optional_|Token required for authentication (when authentication is required).|string|
+|*FormData*|*dateCreated* +
+_optional_|An optional timestamp overriding the default creation date of the task.|integer|
+|*FormData*|*name* +
+_optional_|An optional name to be associated with the task|string|
+|*FormData*|*options* +
+_optional_|Serialized JSON string of the options to use for processing, as an array of the format: [{name: option1, value: value1}, {name: option2, value: value2}, …]. For example, [{"name":"cmvs-maxImages","value":"500"},{"name":"time","value":true}]. For a list of all options, call /options|string|
+|*FormData*|*outputs* +
+_optional_|An optional serialized JSON string of paths relative to the project directory that should be included in the all.zip result file, overriding the default behavior.|string|
+|*FormData*|*skipPostProcessing* +
+_optional_|When set, skips generation of point cloud tiles.|boolean|
+|*FormData*|*webhook* +
+_optional_|Optional URL to call when processing has ended (either successfully or unsuccessfully).|string|
+|===
+
+
+==== Responses
+
+[options="header", cols=".^2,.^14,.^4"]
+|===
+|HTTP Code|Description|Schema
+|*200*|Success|<<_task_new_init_post_response_200,Response 200>>
+|*default*|Error|<<_error,Error>>
+|===
+
+[[_task_new_init_post_response_200]]
+*Response 200*
+
+[options="header", cols=".^3,.^11,.^4"]
+|===
+|Name|Description|Schema
+|*uuid* +
+_required_|UUID of the newly created task|string
+|===
+
+
+==== Tags
+
+* task
+
+
+[[_task_new_upload_uuid_post]]
+=== POST /task/new/upload/{uuid}
+
+==== Description
+Adds one or more files to the task created via /task/new/init. It does not start the task. To start the task, call /task/new/commit.
+
+
+==== Parameters
+
+[options="header", cols=".^2,.^3,.^9,.^4,.^2"]
+|===
+|Type|Name|Description|Schema|Default
+|*Path*|*uuid* +
+_required_|UUID of the task|string|
+|*Query*|*token* +
+_optional_|Token required for authentication (when authentication is required).|string|
+|*FormData*|*images* +
+_required_|Images to process, plus optional files such as a GEO file (geo.txt), image groups file (image_groups.txt), GCP file (*.txt) or seed file (seed.zip). If included, the GCP file should have .txt extension. If included, the seed archive pre-polulates the task directory with its contents.|file|
+|===
+
+
+==== Responses
+
+[options="header", cols=".^2,.^14,.^4"]
+|===
+|HTTP Code|Description|Schema
+|*200*|File Received|<<_response,Response>>
+|*default*|Error|<<_error,Error>>
 |===
 
 
@@ -407,7 +598,7 @@ Retrieves an asset (the output of OpenDroneMap's processing) associated with a t
 |===
 |Type|Name|Description|Schema|Default
 |*Path*|*asset* +
-_required_|Type of asset to download. Use "all.zip" for zip file containing all assets.|enum (all.zip, orthophoto.tif)|
+_required_|Type of asset to download. Use "all.zip" for zip file containing all assets.|enum (all.zip)|
 |*Path*|*uuid* +
 _required_|UUID of the task|string|
 |*Query*|*token* +
@@ -451,8 +642,8 @@ Gets information about this task, such as name, creation date, processing time, 
 _required_|UUID of the task|string|
 |*Query*|*token* +
 _optional_|Token required for authentication (when authentication is required).|string|
-|*FormData*|*options* +
-_optional_|Serialized JSON string of the options to use for processing, as an array of the format: [{name: option1, value: value1}, {name: option2, value: value2}, …]. For example, [{"name":"cmvs-maxImages","value":"500"},{"name":"time","value":true}]. For a list of all options, call /options|string|
+|*Query*|*with_output* +
+_optional_|Optionally retrieve the console output for this task. The parameter specifies the line number that the console output should be truncated from. For example, passing a value of 100 will retrieve the console output starting from line 100. By default no console output is added to the response.|integer|`"0"`
 |===
 
 
@@ -479,10 +670,12 @@ _required_|Number of images|integer
 _required_|Name|string
 |*options* +
 _required_|List of options used to process this task|< <<_task_uuid_info_get_options,options>> > array
+|*output* +
+_optional_|Console output for the task (only if requested via ?output=<linenum>)|< string > array
 |*processingTime* +
 _required_|Milliseconds that have elapsed since the task started being processed.|integer
 |*status* +
-_required_|Status code (10 = QUEUED, 20 = RUNNING, 30 = FAILED, 40 = COMPLETED, 50 = CANCELED)|integer
+_required_||<<_task_uuid_info_get_status,status>>
 |*uuid* +
 _required_|UUID|string
 |===
@@ -497,6 +690,16 @@ _required_|UUID|string
 _required_|Option name (example: "odm_meshing-octreeDepth")|string
 |*value* +
 _required_|Value (example: 9)|string
+|===
+
+[[_task_uuid_info_get_status]]
+*status*
+
+[options="header", cols=".^3,.^11,.^4"]
+|===
+|Name|Description|Schema
+|*code* +
+_required_|Status code (10 = QUEUED, 20 = RUNNING, 30 = FAILED, 40 = COMPLETED, 50 = CANCELED)|integer
 |===
 
 
